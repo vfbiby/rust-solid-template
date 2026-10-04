@@ -57,9 +57,8 @@ stop_stack() {
     rm -f "$file"
   done
   if command -v portless >/dev/null 2>&1; then
-    # 与 start 注册用同一个裸名；portless 在 worktree 里自己解析带分支前缀的名字。
-    portless alias --remove "$APP_NAME" >/dev/null 2>&1
-    portless alias --remove "api.$APP_NAME" >/dev/null 2>&1
+    portless alias --remove "$host" >/dev/null 2>&1
+    portless alias --remove "$api_host" >/dev/null 2>&1
   fi
   rm -f "$DEV_DIR/env.sh"
 }
@@ -100,15 +99,16 @@ do_start() {
 
   local dev_url api_url via="loopback（portless 不可用）"
   if command -v portless >/dev/null 2>&1; then
-    # 守护没起就起（已在跑则只是多打一行日志）；URL 让 portless 自己给，不硬拼端口。
-    # 域名的 worktree 前缀由 portless 自己检测分支加，我们不手动拼 slug。
+    # 守护没起就起（已在跑则只是多打一行日志）。域名用自己拼的 <slug>.<app>：
+    # alias 注册字面名，而 get 会无端加分支前缀，两边语义不一致——URL 权威
+    # 改从 list 的路由行提取，get 不用。
     portless proxy start >/dev/null 2>&1
     sleep 1
-    if portless alias "$APP_NAME" "$ui_port" --force >/dev/null 2>&1 \
-      && portless alias "api.$APP_NAME" "$backend_port" --force >/dev/null 2>&1 \
-      && dev_url="$(portless get "$APP_NAME" 2>/dev/null)" \
-      && api_url="$(portless get "api.$APP_NAME" 2>/dev/null)"; then
-      via="portless"
+    if portless alias "$host" "$ui_port" --force >/dev/null 2>&1 \
+      && portless alias "$api_host" "$backend_port" --force >/dev/null 2>&1; then
+      dev_url="$(portless list 2>/dev/null | sed -n "s|^.*\(http://$host\.localhost:[0-9]*\).*$|\1|p" | head -1)"
+      api_url="$(portless list 2>/dev/null | sed -n "s|^.*\(http://$api_host\.localhost:[0-9]*\).*$|\1|p" | head -1)"
+      [ -n "$dev_url" ] && [ -n "$api_url" ] && via="portless"
     fi
   fi
   if [ -z "${dev_url:-}" ]; then
