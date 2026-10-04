@@ -37,4 +37,6 @@ cleanup() {
 cleanup || exit 1
 trap cleanup EXIT
 
+# workspace 清单在 web/ 下（后端 crate 是 web/api）。
+cd "$ROOT/web"
 cargo test "$@"

@@ -18,8 +18,9 @@ gate() {
   fi
 }
 
-gate fmt cargo fmt --all --check
-gate clippy cargo clippy --workspace --all-targets -- -D warnings
+# workspace 清单在 web/ 下（后端 crate 是 web/api），cargo 系列都在 web/ 里跑。
+gate fmt bash -c 'cd web && cargo fmt --all --check'
+gate clippy bash -c 'cd web && cargo clippy --workspace --all-targets -- -D warnings'
 gate 后端测试 "$ROOT/scripts/cargo-test.sh" --no-fail-fast
 gate 前端 bash -c 'cd web && bun run typecheck && bun run test'
 

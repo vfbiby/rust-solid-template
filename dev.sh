@@ -148,9 +148,9 @@ do_start() {
     api_url="http://127.0.0.1:$backend_port"
   fi
 
-  cargo build --quiet || exit 1
+  (cd "$ROOT/web" && cargo build --quiet) || exit 1
   PORT="$backend_port" DATABASE_URL="$dev_db_url" \
-    nohup "$ROOT/target/debug/server" >> "$LOG_DIR/backend.log" 2>&1 &
+    nohup "$ROOT/web/target/debug/server" >> "$LOG_DIR/backend.log" 2>&1 &
   echo $! > "$BACKEND_PID_FILE"
 
   if [ ! -d "$ROOT/web/node_modules" ]; then
