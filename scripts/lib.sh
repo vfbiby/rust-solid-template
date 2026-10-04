@@ -30,10 +30,11 @@ s.close()'
 }
 
 # 本机 dev 库：主 checkout 用 <app>，worktree 用 <app>_<slug>。
+# 库名把域名 slug 里的 - 折成 _（PG 标识符不带引号不容 -）。
 dev_db_name() {
   local slug="$1"
   if [ -n "$slug" ]; then
-    printf '%s_%s' "$APP_NAME" "$slug"
+    printf '%s_%s' "$APP_NAME" "${slug//-/_}"
   else
     printf '%s' "$APP_NAME"
   fi
