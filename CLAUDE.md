@@ -12,4 +12,4 @@
 
 - **禁按端口/进程名杀进程**（`lsof -ti :port`、`pkill -f vite`）：多 worktree 并行时是事故源。只按 `.dev/*.pid` 杀，杀前校验进程名。
 - **禁写死端口**：端口是 dev.sh 动态分配的实现细节；测试与脚本认 env 接缝（`RSTS_TEST_PG_URL`、`E2E_BASE_URL`）。
-- 起名只有两处：`scripts/lib.sh` 的 `APP_NAME`、`crates/server/tests/common/mod.rs` 的 `const APP`。改名清单见 README。
+- 起名只有两处：`scripts/lib.sh` 的 `APP_NAME`、`api/tests/common/mod.rs` 的 `const APP`。改名清单见 README。

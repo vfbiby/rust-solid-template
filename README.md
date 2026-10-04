@@ -73,7 +73,7 @@ sanitize（小写、非法字符折 `-`、截 20 字符）后可能撞名——�
 默认名叫 `rsts`，改成你的项目名只有两处（外加可选的展示名）：
 
 1. `scripts/lib.sh` 的 `APP_NAME` —— 域名、库名、env 变量前缀（`RSTS_*`）都从它派生
-2. `crates/server/tests/common/mod.rs` 的 `const APP` —— Rust 侧测试库名前缀
+2. `api/tests/common/mod.rs` 的 `const APP` —— Rust 侧测试库名前缀
 3. 可选展示名：`web/package.json` 的 `name`、`web/index.html` 的 `<title>`
 
 改完 `grep -ri rsts --exclude-dir=target --exclude-dir=node_modules` 应只剩 README/CLAUDE.md。
