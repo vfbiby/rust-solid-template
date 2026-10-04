@@ -103,7 +103,8 @@ do_start() {
   ui_port="$(free_port)"
 
   local dev_url api_url via="loopback（portless 不可用）"
-  if command -v portless >/dev/null 2>&1; then
+  [ -n "${PLAIN:-}" ] && via="loopback（PLAIN=1）"
+  if command -v portless >/dev/null 2>&1 && [ -z "${PLAIN:-}" ]; then
     # 判活只认 portless 的应答暗号（X-Portless 响应头）——root 起的管理员守护，
     # 非特权 lsof 根本看不见。管理员态（80/443 有暗号）绝不能再 proxy start，
     # 还必须停掉用户态 1355 残活：portless 是单活守护假设 + 双存储（<1024 端口
@@ -230,6 +231,7 @@ URL 接缝（人和脚本都只认这些，别拼端口）：
 
 portless（可选，命名域名）：
   不装 portless          → 自动回退 http://127.0.0.1:<port>，零改动
+  PLAIN=1 ./dev.sh start → 装了也不要域名，按传统 http://127.0.0.1:<port> 起
   portless proxy start   → 普通模式，URL 形如 http://<app>.localhost:1355
   无端口的干净 URL（http://<app>.localhost）需要管理员起一次代理（80/443 要特权）：
       sudo portless proxy stop           # 若之前有用户态守护，先停

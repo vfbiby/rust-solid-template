@@ -18,6 +18,7 @@ Rust(axum + sqlx + Postgres) 后端 + SolidJS(Vite + bun) 前端的通用起步�
 ./dev.sh stop
 ./dev.sh status
 ./dev.sh logs backend # 或 frontend
+PLAIN=1 ./dev.sh start  # 装了 portless 也按传统 http://127.0.0.1:<port> 起
 ```
 
 后端测试与验收：
