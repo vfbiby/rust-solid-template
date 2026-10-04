@@ -104,24 +104,42 @@ do_start() {
 
   local dev_url api_url via="loopback（portless 不可用）"
   if command -v portless >/dev/null 2>&1; then
-    # 管理员可能把代理起在 80/443——此时绝不能再 proxy start（pidfile 语义会
-    # 把管理员的守护顶掉、回落 1355）。只有 80/443 都没人听才自己起默认代理。
-    # 域名用自己拼的 <slug>.<app>：alias 注册字面名，而 get 会无端加分支前缀，
-    # 两边语义不一致——URL 权威从 list 的路由行提取，get 不用。代理在 80/443
-    # 时 URL 省略端口号。
-    if ! lsof -nP -iTCP:80 -sTCP:LISTEN >/dev/null 2>&1 \
-      && ! lsof -nP -iTCP:443 -sTCP:LISTEN >/dev/null 2>&1; then
+    # 判活只认 portless 的应答暗号（X-Portless 响应头）——root 起的管理员守护，
+    # 非特权 lsof 根本看不见。管理员态（80/443 有暗号）绝不能再 proxy start，
+    # 还必须停掉用户态 1355 残活：portless 是单活守护假设 + 双存储（<1024 端口
+    # 走系统级 /tmp/portless，否则 ~/.portless），discoverState 永远用户存储优先，
+    # 1355 残活会把 alias 路由带去 80 守护看不见的地方。
+    local admin_port=""
+    if curl -sI --max-time 2 http://127.0.0.1:80/ 2>/dev/null | grep -qi '^x-portless: *1'; then
+      admin_port=80
+    elif curl -sI -k --max-time 2 https://127.0.0.1:443/ 2>/dev/null | grep -qi '^x-portless: *1'; then
+      admin_port=443
+    fi
+    if [ -n "$admin_port" ]; then
+      portless proxy stop >/dev/null 2>&1
+    else
       portless proxy start >/dev/null 2>&1
       sleep 1
     fi
     if portless alias "$host" "$ui_port" --force >/dev/null 2>&1 \
       && portless alias "$api_host" "$backend_port" --force >/dev/null 2>&1; then
       local re_host="${host//./\\.}" re_api="${api_host//./\\.}"
-      dev_url="$(portless list 2>/dev/null | sed -E -n "s|^.*(https?)://(${re_host}\\.localhost)(:[0-9]+)?.*$|\1://\2\3|p" | head -1)"
-      api_url="$(portless list 2>/dev/null | sed -E -n "s|^.*(https?)://(${re_api}\\.localhost)(:[0-9]+)?.*$|\1://\2\3|p" | head -1)"
-      case "$dev_url" in *:80) dev_url="${dev_url%:80}" ;; *:443) dev_url="${dev_url%:443}" ;; esac
-      case "$api_url" in *:80) api_url="${api_url%:80}" ;; *:443) api_url="${api_url%:443}" ;; esac
-      [ -n "$dev_url" ] && [ -n "$api_url" ] && via="portless"
+      case "$admin_port" in
+        80)
+          dev_url="http://$host.localhost"
+          api_url="http://$api_host.localhost" ;;
+        443)
+          dev_url="https://$host.localhost"
+          api_url="https://$api_host.localhost" ;;
+        *)
+          dev_url="$(portless list 2>/dev/null | sed -E -n "s|^.*(https?)://(${re_host}\\.localhost)(:[0-9]+)?.*$|\1://\2\3|p" | head -1)"
+          api_url="$(portless list 2>/dev/null | sed -E -n "s|^.*(https?)://(${re_api}\\.localhost)(:[0-9]+)?.*$|\1://\2\3|p" | head -1)" ;;
+      esac
+      # 路由真的落进 list（= 落对存储）才算 portless 接管成功。
+      if [ -n "$dev_url" ] && [ -n "$api_url" ] \
+        && portless list 2>/dev/null | grep -q "://${re_host}\.localhost"; then
+        via="portless"
+      fi
     fi
   fi
   if [ -z "${dev_url:-}" ]; then
