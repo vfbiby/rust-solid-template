@@ -186,6 +186,9 @@ export DEV_DATABASE_URL=$dev_db_url
 export DEV_URL=$dev_url
 export API_URL=$api_url
 export E2E_BASE_URL=$dev_url
+# 嫌 portless 代理慢（每请求多 10-50ms，Nagle 之故）时的直连地址：
+export DEV_URL_DIRECT=http://127.0.0.1:$ui_port
+export API_URL_DIRECT=http://127.0.0.1:$backend_port
 EOF
 
   echo "✅ 就绪（${via}）"

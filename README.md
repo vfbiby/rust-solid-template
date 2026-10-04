@@ -50,6 +50,11 @@ sudo portless proxy start -p 80        # 或 sudo portless proxy start --https -
 注意：管理员身份只用于这一次代理启动；`./dev.sh` 本身永远不要用 root 跑
 （会拒绝执行——进程和 pid 文件归 root 后，非 root 的 stop 收不掉）。
 
+**已知坑：走 portless 域名的每个请求多 10–50ms**（实测直连 vite ~2ms，走域名
+10–55ms 波动）——portless 的代理 socket 没关 Nagle（源码零处 `setNoDelay`），
+是它自己的实现问题，生产 nginx 不受影响。交互调试嫌慢就用 `.dev/env.sh` 里的
+`DEV_URL_DIRECT` / `API_URL_DIRECT`（回环直连，绕过代理）。
+
 ## worktree 并行
 
 ```sh
