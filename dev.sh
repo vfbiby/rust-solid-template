@@ -213,10 +213,39 @@ do_status() {
   fi
 }
 
-case "${1:-start}" in
+usage() {
+  cat <<'EOF'
+用法：./dev.sh <命令>
+
+  start                    起整栈（后端 + 前端 + 开发库），幂等；URL 落盘 .dev/env.sh
+  stop                     停整栈（只杀自己 pid 文件里的进程）
+  status                   各进程活死 + 当前 URL
+  logs [backend|frontend]  跟日志（缺省 backend）
+
+URL 接缝（人和脚本都只认这些，别拼端口）：
+  .dev/env.sh 里的 DEV_URL / API_URL / E2E_BASE_URL
+
+portless（可选，命名域名）：
+  不装 portless          → 自动回退 http://127.0.0.1:<port>，零改动
+  portless proxy start   → 普通模式，URL 形如 http://<app>.localhost:1355
+  无端口的干净 URL（http://<app>.localhost）需要管理员起一次代理（80/443 要特权）：
+      sudo portless proxy stop           # 若之前有用户态守护，先停
+      sudo portless proxy start -p 80    # 或 sudo portless proxy start --https -p 443
+  之后 ./dev.sh start 自动适配；dev.sh 本身别用 root 跑（会被拒绝）。
+
+开发库：默认连本机 5433 的 Postgres，主 checkout 用库名 <app>，worktree 用 <app>_<分支slug>。
+EOF
+}
+
+if [ $# -eq 0 ]; then
+  usage
+  exit 0
+fi
+
+case "$1" in
   start) do_start ;;
   stop) stop_stack; echo "已停止。" ;;
   status) do_status ;;
   logs) tail -n 100 -f "$LOG_DIR/${2:-backend}.log" ;;
-  *) echo "用法：./dev.sh start | stop | status | logs [backend|frontend]"; exit 1 ;;
+  *) usage; exit 1 ;;
 esac
