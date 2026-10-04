@@ -104,11 +104,16 @@ do_start() {
 
   local dev_url api_url via="loopback（portless 不可用）"
   if command -v portless >/dev/null 2>&1; then
-    # 守护没起就起（已在跑则只是多打一行日志）。域名用自己拼的 <slug>.<app>：
-    # alias 注册字面名，而 get 会无端加分支前缀，两边语义不一致——URL 权威
-    # 改从 list 的路由行提取，get 不用。代理起在 80/443（管理员）时端口号可省。
-    portless proxy start >/dev/null 2>&1
-    sleep 1
+    # 管理员可能把代理起在 80/443——此时绝不能再 proxy start（pidfile 语义会
+    # 把管理员的守护顶掉、回落 1355）。只有 80/443 都没人听才自己起默认代理。
+    # 域名用自己拼的 <slug>.<app>：alias 注册字面名，而 get 会无端加分支前缀，
+    # 两边语义不一致——URL 权威从 list 的路由行提取，get 不用。代理在 80/443
+    # 时 URL 省略端口号。
+    if ! lsof -nP -iTCP:80 -sTCP:LISTEN >/dev/null 2>&1 \
+      && ! lsof -nP -iTCP:443 -sTCP:LISTEN >/dev/null 2>&1; then
+      portless proxy start >/dev/null 2>&1
+      sleep 1
+    fi
     if portless alias "$host" "$ui_port" --force >/dev/null 2>&1 \
       && portless alias "$api_host" "$backend_port" --force >/dev/null 2>&1; then
       local re_host="${host//./\\.}" re_api="${api_host//./\\.}"
