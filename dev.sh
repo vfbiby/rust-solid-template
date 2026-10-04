@@ -64,6 +64,11 @@ stop_stack() {
 }
 
 do_start() {
+  if [ "$(id -u)" = 0 ]; then
+    echo "别用 root 跑 dev.sh：进程和 pid 文件会归 root，之后非 root 的 stop 收不掉。"
+    echo "要无端口 URL，管理员只需单独起一次代理：sudo portless proxy start -p 80（或 --https -p 443）"
+    exit 1
+  fi
   mkdir -p "$DEV_DIR" "$LOG_DIR"
 
   if pid_alive "$BACKEND_PID_FILE" && pid_alive "$FRONTEND_PID_FILE" && [ -f "$DEV_DIR/env.sh" ]; then
@@ -101,13 +106,16 @@ do_start() {
   if command -v portless >/dev/null 2>&1; then
     # 守护没起就起（已在跑则只是多打一行日志）。域名用自己拼的 <slug>.<app>：
     # alias 注册字面名，而 get 会无端加分支前缀，两边语义不一致——URL 权威
-    # 改从 list 的路由行提取，get 不用。
+    # 改从 list 的路由行提取，get 不用。代理起在 80/443（管理员）时端口号可省。
     portless proxy start >/dev/null 2>&1
     sleep 1
     if portless alias "$host" "$ui_port" --force >/dev/null 2>&1 \
       && portless alias "$api_host" "$backend_port" --force >/dev/null 2>&1; then
-      dev_url="$(portless list 2>/dev/null | sed -n "s|^.*\(http://$host\.localhost:[0-9]*\).*$|\1|p" | head -1)"
-      api_url="$(portless list 2>/dev/null | sed -n "s|^.*\(http://$api_host\.localhost:[0-9]*\).*$|\1|p" | head -1)"
+      local re_host="${host//./\\.}" re_api="${api_host//./\\.}"
+      dev_url="$(portless list 2>/dev/null | sed -E -n "s|^.*(https?)://(${re_host}\\.localhost)(:[0-9]+)?.*$|\1://\2\3|p" | head -1)"
+      api_url="$(portless list 2>/dev/null | sed -E -n "s|^.*(https?)://(${re_api}\\.localhost)(:[0-9]+)?.*$|\1://\2\3|p" | head -1)"
+      case "$dev_url" in *:80) dev_url="${dev_url%:80}" ;; *:443) dev_url="${dev_url%:443}" ;; esac
+      case "$api_url" in *:80) api_url="${api_url%:80}" ;; *:443) api_url="${api_url%:443}" ;; esac
       [ -n "$dev_url" ] && [ -n "$api_url" ] && via="portless"
     fi
   fi

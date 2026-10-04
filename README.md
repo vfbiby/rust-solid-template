@@ -40,6 +40,16 @@ portless proxy start --https   # 可选：HTTPS/2 模式（生成 CA，首次 po
 portless hosts sync      # Safari 还需要这个；Chrome/curl 直接受 .localhost
 ```
 
+**无端口的干净 URL**（`http://<app>.localhost`，不带 `:1355`）：用管理员单独把代理
+起在默认端口即可，dev.sh 会自动适配并省略端口号：
+
+```sh
+sudo portless proxy start -p 80        # 或 sudo portless proxy start --https -p 443
+```
+
+注意：管理员身份只用于这一次代理启动；`./dev.sh` 本身永远不要用 root 跑
+（会拒绝执行——进程和 pid 文件归 root 后，非 root 的 stop 收不掉）。
+
 ## worktree 并行
 
 ```sh
