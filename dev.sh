@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# dev.sh —— 本地整栈（后端 + 前端 + 开发库）的启停。端口是动态分配的实现细节，
+# 所有消费者只认 .dev/env.sh 里的 URL。多个 git worktree 可同时各跑一套，互不干扰：
+# 进程只按 pid 文件杀，绝不按端口/进程名杀；域名与库名带 worktree slug。
+#
+# 用法：./dev.sh start | stop | status | logs [backend|frontend]
+set -u
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "不在仓库里"; exit 1; }
+cd "$ROOT"
+# shellcheck source=scripts/lib.sh
+source "$ROOT/scripts/lib.sh"
+
+DEV_DIR="$ROOT/.dev"
+LOG_DIR="$ROOT/logs"
+BACKEND_PID_FILE="$DEV_DIR/backend.pid"
+FRONTEND_PID_FILE="$DEV_DIR/frontend.pid"
+
+slug="$(compute_slug)"
+host="$APP_NAME"
+[ -n "$slug" ] && host="${slug}.${APP_NAME}"
+api_host="api.${host}"
+
+# 探活一律走数字回环：.localhost 可能被系统代理截走，NO_PROXY 对后缀匹配各实现不一。
+export NO_PROXY="127.0.0.1,localhost,::1,.localhost"
+export no_proxy="$NO_PROXY"
+
+pid_alive() {
+  [ -f "$1" ] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null
+}
+
+expect_process_name() {
+  # 防陈旧 pid 复用：pid 文件里的号换了个不相干进程时不许杀。
+  local comm
+  comm="$(ps -p "$1" -o comm= 2>/dev/null | xargs basename 2>/dev/null)"
+  case "$comm" in
+    server|node|bun|vite*) return 0 ;;
+    *) echo "警告：$2 里的 pid $1 现在是 ${comm}，不像我们的进程，不杀"; return 1 ;;
+  esac
+}
+
+stop_stack() {
+  local name file pid
+  for name in backend frontend; do
+    if [ "$name" = backend ]; then file="$BACKEND_PID_FILE"; else file="$FRONTEND_PID_FILE"; fi
+    [ -f "$file" ] || continue
+    pid="$(cat "$file" 2>/dev/null)"
+    if [ -n "$pid" ] && expect_process_name "$pid" "$file"; then
+      pkill -P "$pid" 2>/dev/null
+      kill "$pid" 2>/dev/null
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+      done
+      kill -0 "$pid" 2>/dev/null && { echo "强杀 $name ($pid)"; kill -9 "$pid" 2>/dev/null; }
+    fi
+    rm -f "$file"
+  done
+  if command -v portless >/dev/null 2>&1; then
+    portless alias --remove "$host" >/dev/null 2>&1
+    portless alias --remove "$api_host" >/dev/null 2>&1
+  fi
+  rm -f "$DEV_DIR/env.sh"
+}
+
+do_start() {
+  mkdir -p "$DEV_DIR" "$LOG_DIR"
+
+  if pid_alive "$BACKEND_PID_FILE" && pid_alive "$FRONTEND_PID_FILE" && [ -f "$DEV_DIR/env.sh" ]; then
+    echo "栈已在跑："; cat "$DEV_DIR/env.sh" | sed 's/^export //'
+    exit 0
+  fi
+  stop_stack >/dev/null 2>&1
+
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "找不到 psql（brew install libpq 或 postgresql@16）"; exit 1
+  fi
+
+  local i ok=0
+  for i in $(seq 1 20); do
+    psql -X -At -v ON_ERROR_STOP=1 -d "$DEFAULT_PG_URL" -c 'select 1' >/dev/null 2>&1 && { ok=1; break; }
+    sleep 0.5
+  done
+  [ "$ok" = 1 ] || { echo "Postgres 未就绪（$DEFAULT_PG_URL 连不上）"; exit 1; }
+
+  local db_name
+  db_name="$(dev_db_name "$slug")"
+  printf '%s' "$db_name" | grep -Eq '^[a-z0-9_]+$' || { echo "库名不合法：$db_name"; exit 1; }
+  if ! psql -X -At -d "$DEFAULT_PG_URL" -tAc "SELECT 1 FROM pg_database WHERE datname='$db_name'" | grep -q 1; then
+    psql -X -q -v ON_ERROR_STOP=1 -d "$DEFAULT_PG_URL" -c "create database \"$db_name\"" || exit 1
+  fi
+  local admin_url dev_db_url
+  admin_url="${DEFAULT_PG_URL%/*}"
+  dev_db_url="$admin_url/$db_name"
+
+  local backend_port ui_port
+  backend_port="$(free_port)"
+  ui_port="$(free_port)"
+
+  local dev_url api_url via="loopback（portless 不可用）"
+  if command -v portless >/dev/null 2>&1; then
+    # 守护没起就起（已在跑则只是多打一行日志）；URL 让 portless 自己给，不硬拼端口。
+    portless proxy start >/dev/null 2>&1
+    sleep 1
+    if portless alias "$host" "$ui_port" --force >/dev/null 2>&1 \
+      && portless alias "$api_host" "$backend_port" --force >/dev/null 2>&1 \
+      && dev_url="$(portless get "$host" 2>/dev/null)" \
+      && api_url="$(portless get "$api_host" 2>/dev/null)"; then
+      via="portless"
+    fi
+  fi
+  if [ -z "${dev_url:-}" ]; then
+    dev_url="http://127.0.0.1:$ui_port"
+    api_url="http://127.0.0.1:$backend_port"
+  fi
+
+  cargo build --quiet || exit 1
+  PORT="$backend_port" DATABASE_URL="$dev_db_url" \
+    nohup "$ROOT/target/debug/server" >> "$LOG_DIR/backend.log" 2>&1 &
+  echo $! > "$BACKEND_PID_FILE"
+
+  if [ ! -d "$ROOT/web/node_modules" ]; then
+    echo "前端依赖未装，bun install ..."
+    (cd "$ROOT/web" && bun install) || exit 1
+  fi
+  # 直接调 vite.js 而非 bun run dev：pid 就是 vite server 自己，kill 不留孤儿。
+  # 注意 & 必须只作用于 nohup 这一条简单命令——连着 cd 一起后台化的话，
+  # $! 记下的是包一层的 bash 壳，stop 的进程名校验会拒杀、vite 泄漏。
+  (
+    cd "$ROOT/web" || exit 1
+    UI_DEV_PORT="$ui_port" BACKEND_PORT="$backend_port" \
+      nohup node node_modules/vite/bin/vite.js >> ../logs/frontend.log 2>&1 &
+    echo $! > "$FRONTEND_PID_FILE"
+  )
+
+  ok=0
+  for i in $(seq 1 40); do
+    curl -sf "http://127.0.0.1:$backend_port/health" >/dev/null 2>&1 \
+      && curl -sf "http://127.0.0.1:$ui_port/" >/dev/null 2>&1 && { ok=1; break; }
+    sleep 0.5
+  done
+  if [ "$ok" != 1 ]; then
+    echo "启动失败，日志尾部："
+    tail -n 10 "$LOG_DIR/backend.log" "$LOG_DIR/frontend.log"
+    stop_stack >/dev/null 2>&1
+    exit 1
+  fi
+
+  cat > "$DEV_DIR/env.sh" <<EOF
+export BACKEND_PORT=$backend_port
+export UI_PORT=$ui_port
+export DEV_DATABASE_URL=$dev_db_url
+export DEV_URL=$dev_url
+export API_URL=$api_url
+export E2E_BASE_URL=$dev_url
+EOF
+
+  echo "✅ 就绪（${via}）"
+  echo "   前端  $dev_url"
+  echo "   API   $api_url"
+  echo "   库    $dev_db_url"
+  echo "   日志  logs/ ｜ 停止  ./dev.sh stop"
+}
+
+do_status() {
+  local name file pid state
+  for name in backend frontend; do
+    if [ "$name" = backend ]; then file="$BACKEND_PID_FILE"; else file="$FRONTEND_PID_FILE"; fi
+    if pid_alive "$file"; then
+      state="活着 (pid $(cat "$file"))"
+    elif [ -f "$file" ]; then
+      state="pid 文件在但进程死了"
+    else
+      state="未启动"
+    fi
+    printf '%-10s %s\n' "$name" "$state"
+  done
+  if [ -f "$DEV_DIR/env.sh" ]; then
+    grep -E 'DEV_URL|API_URL|DEV_DATABASE_URL' "$DEV_DIR/env.sh" | sed 's/^export //'
+  fi
+}
+
+case "${1:-start}" in
+  start) do_start ;;
+  stop) stop_stack; echo "已停止。" ;;
+  status) do_status ;;
+  logs) tail -n 100 -f "$LOG_DIR/${2:-backend}.log" ;;
+  *) echo "用法：./dev.sh start | stop | status | logs [backend|frontend]"; exit 1 ;;
+esac
