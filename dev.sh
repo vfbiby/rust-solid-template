@@ -71,9 +71,15 @@ do_start() {
   fi
   mkdir -p "$DEV_DIR" "$LOG_DIR"
 
+  # 幂等出口前先验 DEV_URL 还通不通：代理守护变了（比如管理员停了 443，回落用户态
+  # 1355）时 env.sh 里的 URL 已失效，这时不算「已在跑」，落下去整体重启、重算 URL。
   if pid_alive "$BACKEND_PID_FILE" && pid_alive "$FRONTEND_PID_FILE" && [ -f "$DEV_DIR/env.sh" ]; then
-    echo "栈已在跑："; cat "$DEV_DIR/env.sh" | sed 's/^export //'
-    exit 0
+    live_url="$(sed -n 's/^export DEV_URL=//p' "$DEV_DIR/env.sh" | head -1)"
+    if [ -n "$live_url" ] && curl -sfk --max-time 2 "$live_url" >/dev/null 2>&1; then
+      echo "栈已在跑："; cat "$DEV_DIR/env.sh" | sed 's/^export //'
+      exit 0
+    fi
+    echo "进程活着但 DEV_URL 不通（${live_url:-无}），重启栈重算 URL…"
   fi
   stop_stack >/dev/null 2>&1
 
@@ -106,20 +112,21 @@ do_start() {
   [ -n "${PLAIN:-}" ] && via="loopback（PLAIN=1）"
   if command -v portless >/dev/null 2>&1 && [ -z "${PLAIN:-}" ]; then
     # 判活只认 portless 的应答暗号（X-Portless 响应头）——root 起的管理员守护，
-    # 非特权 lsof 根本看不见。管理员态（80/443 有暗号）绝不能再 proxy start，
-    # 还必须停掉用户态 1355 残活：portless 是单活守护假设 + 双存储（<1024 端口
-    # 走系统级 /tmp/portless，否则 ~/.portless），discoverState 永远用户存储优先，
-    # 1355 残活会把 alias 路由带去 80 守护看不见的地方。
+    # 非特权 lsof 根本看不见。portless 是单活守护假设 + 双存储（<1024 端口走系统级
+    # /tmp/portless，否则 ~/.portless），discoverState 永远用户存储优先：管理员守护
+    # 与用户态 1355 残活混跑时 alias 路由会带去守护看不见的地方——这修不了，靠最后
+    # 的 URL 闸回落直连。但 proxy stop/start 在管理员态都绝不调：stop 按进程名杀
+    # 所有守护、不分局主（会杀掉 sudo 起的 80/443，实测），start 缺省抢 443 要提权。
     local admin_port=""
     if curl -sI --max-time 2 http://127.0.0.1:80/ 2>/dev/null | grep -qi '^x-portless: *1'; then
       admin_port=80
     elif curl -sI -k --max-time 2 https://127.0.0.1:443/ 2>/dev/null | grep -qi '^x-portless: *1'; then
       admin_port=443
     fi
-    if [ -n "$admin_port" ]; then
-      portless proxy stop >/dev/null 2>&1
-    else
-      portless proxy start >/dev/null 2>&1
+    if [ -z "$admin_port" ]; then
+      # 必须显式 -p 1355：portless 0.15.7 起，裸 `proxy start` 默认抢 443 并内部
+      # 调 sudo——表现为 dev.sh 突然要密码。dev.sh 全程不许提权，用户态 1355 即可。
+      portless proxy start -p 1355 >/dev/null 2>&1
       sleep 1
     fi
     if portless alias "$host" "$ui_port" --force >/dev/null 2>&1 \
@@ -127,8 +134,15 @@ do_start() {
       local re_host="${host//./\\.}" re_api="${api_host//./\\.}"
       case "$admin_port" in
         80)
-          dev_url="http://$host.localhost"
-          api_url="http://$api_host.localhost" ;;
+          # -p 80 缺省也是 HTTPS/2（纯 HTTP 要 --no-tls）：按守护实际说的协议发 URL；
+          # TLS 时带显式 :80——无端口形式浏览器会打去 443，那里没人听。
+          if curl -so /dev/null --max-time 2 "http://127.0.0.1:80/" 2>/dev/null; then
+            dev_url="http://$host.localhost"
+            api_url="http://$api_host.localhost"
+          else
+            dev_url="https://$host.localhost:80"
+            api_url="https://$api_host.localhost:80"
+          fi ;;
         443)
           dev_url="https://$host.localhost"
           api_url="https://$api_host.localhost" ;;
@@ -178,6 +192,15 @@ do_start() {
     tail -n 10 "$LOG_DIR/backend.log" "$LOG_DIR/frontend.log"
     stop_stack >/dev/null 2>&1
     exit 1
+  fi
+
+  # 最后一道闸：portless 域名要真的通才算数。守护混用/单活互掐（sudo 80 与用户态
+  # 1355 双存储）时路由会悬空，这时回落直连，保证打印出来的 URL 一定打得开。
+  if [ "$via" = portless ] && ! curl -skf --max-time 3 "$dev_url/" >/dev/null 2>&1; then
+    echo "portless 域名不通（${dev_url}，守护/路由没接上），回落直连地址。"
+    dev_url="http://127.0.0.1:$ui_port"
+    api_url="http://127.0.0.1:$backend_port"
+    via="loopback（portless 回落）"
   fi
 
   cat > "$DEV_DIR/env.sh" <<EOF
@@ -232,10 +255,11 @@ URL 接缝（人和脚本都只认这些，别拼端口）：
 portless（可选，命名域名）：
   不装 portless          → 自动回退 http://127.0.0.1:<port>，零改动
   PLAIN=1 ./dev.sh start → 装了也不要域名，按传统 http://127.0.0.1:<port> 起
-  portless proxy start   → 普通模式，URL 形如 http://<app>.localhost:1355
-  无端口的干净 URL（http://<app>.localhost）需要管理员起一次代理（80/443 要特权）：
-      sudo portless proxy stop           # 若之前有用户态守护，先停
-      sudo portless proxy start -p 80    # 或 sudo portless proxy start --https -p 443
+  无守护时               → dev.sh 自己起用户态 1355，URL 形如 http://<app>.localhost:1355
+  无端口的干净 URL 需要管理员起一次守护（80/443 要特权，二选一）：
+      sudo portless proxy start --no-tls   # 纯 HTTP：http://<app>.localhost
+      sudo portless proxy start            # HTTPS：https://<app>.localhost
+  守护活着就别再跑用户态 portless 命令（单活 + 双存储，混用互顶）；换模式先停掉旧守护。
   之后 ./dev.sh start 自动适配；dev.sh 本身别用 root 跑（会被拒绝）。
 
 开发库：默认连本机 5433 的 Postgres，主 checkout 用库名 <app>，worktree 用 <app>_<分支slug>。
